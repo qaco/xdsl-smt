@@ -153,7 +153,8 @@ class OperandRewrite(RewritePattern):
             raise Exception("Cannot handle non-typed operands")
         type = _get_type_of_erased_type_value(op.value_type)
         smt_type = SMTLowerer.lower_type(type)
-        rewriter.replace_matched_op(DeclareConstOp(smt_type))
+        const_op = DeclareConstOp(smt_type)
+        rewriter.replace_matched_op(const_op)
 
 
 @dataclass
@@ -310,7 +311,6 @@ def kb_analysis_correct(
     poisoned_value: SSAValue, zeros: SSAValue, ones: SSAValue
 ) -> tuple[SSAValue, list[Operation]]:
     assert isa(poisoned_value.type, smt_utils.PairType[smt_bv.BitVectorType, BoolType])
-
     value_op = smt_utils.FirstOp(poisoned_value)
     value = value_op.res
     assert isinstance(value.type, smt_bv.BitVectorType)

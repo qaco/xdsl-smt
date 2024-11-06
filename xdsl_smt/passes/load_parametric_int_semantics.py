@@ -5,9 +5,11 @@ from xdsl.dialects.builtin import ModuleOp
 from xdsl.dialects import arith
 from xdsl.dialects.builtin import IntegerType
 from xdsl_smt.passes.lower_to_smt.lower_to_smt import SMTLowerer
+from xdsl_smt.passes.pdl_to_smt import PDLToSMT, PDLToSMTLowerer
 from xdsl_smt.dialects import smt_int_dialect as smt_int
 from xdsl_smt.semantics.arith_int_semantics import (
     IntIntegerTypeSemantics,
+    IntIntegerTypeRefinementSemantics,
     IntConstantSemantics,
     IntCmpiSemantics,
     get_binary_ef_semantics,
@@ -20,6 +22,7 @@ class LoadIntSemanticsPass(ModulePass):
     name = "load-int-semantics"
 
     def apply(self, ctx: MLContext, op: ModuleOp) -> None:
+        # Override SMT semantics
         semantics = {
             arith.Constant: IntConstantSemantics(),
             arith.Addi: get_binary_ef_semantics(smt_int.AddOp)(),
@@ -34,3 +37,5 @@ class LoadIntSemanticsPass(ModulePass):
             IntegerType: IntIntegerTypeSemantics(),
         }
         SMTLowerer.type_lowerers = {**SMTLowerer.type_lowerers, **types}
+        # The same for PDL semantics
+        PDLToSMT.pdl_lowerer.refinement = IntIntegerTypeRefinementSemantics()

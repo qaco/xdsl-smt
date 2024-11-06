@@ -1,14 +1,92 @@
 from abc import abstractmethod, ABC
 from xdsl_smt.semantics.semantics import OperationSemantics, TypeSemantics
 from typing import Mapping, Sequence, cast
-from xdsl.ir import SSAValue, Attribute
+from xdsl.ir import SSAValue, Attribute, Region, Block
 from xdsl.pattern_rewriter import PatternRewriter
 from xdsl.utils.hints import isa
 from xdsl.dialects.builtin import IntegerType, AnyIntegerAttr, IntegerAttr
+from xdsl_smt.dialects.smt_dialect import BoolType
 from xdsl_smt.dialects import smt_int_dialect as smt_int
 from xdsl_smt.dialects import smt_dialect as smt
 from xdsl_smt.dialects import smt_utils_dialect as smt_utils
 from xdsl_smt.dialects.effects import ub_effect as smt_ub
+from xdsl_smt.semantics.semantics import RefinementSemantics
+from xdsl_smt.dialects.effects import ub_effect
+from xdsl.dialects.builtin import Signedness
+
+
+class IntIntegerTypeRefinementSemantics(RefinementSemantics):
+    def get_semantics(
+        self,
+        val_before: SSAValue,
+        val_after: SSAValue,
+        state_before: SSAValue,
+        state_after: SSAValue,
+        rewriter: PatternRewriter,
+    ) -> SSAValue:
+        """Compute the refinement from a value with poison semantics to a value with poison semantics."""
+        before_inner_loop = smt_utils.FirstOp(val_before)
+        after_inner_loop = smt_utils.FirstOp(val_after)
+
+        before_poison = smt_utils.SecondOp(before_inner_loop.res)
+        after_poison = smt_utils.SecondOp(after_inner_loop.res)
+
+        before_val = smt_utils.FirstOp(before_inner_loop.res)
+        after_val = smt_utils.FirstOp(after_inner_loop.res)
+
+        rewriter.insert_op_before_matched_op(
+            [
+                before_inner_loop,
+                after_inner_loop,
+                before_poison,
+                after_poison,
+                before_val,
+                after_val,
+            ]
+        )
+
+        not_before_poison = smt.NotOp(before_poison.res)
+        not_after_poison = smt.NotOp(after_poison.res)
+
+        width_type = smt_int.SMTIntType()
+        body = Region([Block(arg_types=[width_type])])
+
+        var = body.first_block.args[0]
+        mod_before = smt_int.ModOp(before_val.res, var)
+        mod_after = smt_int.ModOp(after_val.res, var)
+        eq_op = smt.EqOp(mod_before.res, mod_after.res)
+        yield_op = smt.YieldOp(eq_op.res)
+        body.first_block.add_ops([mod_before, mod_after, eq_op, yield_op])
+
+        forall_op = smt.ForallOp.create(result_types=[BoolType()], regions=[body])
+        not_poison_eq = smt.AndOp(forall_op.res, not_after_poison.res)
+        refinement_integer = smt.ImpliesOp(not_before_poison.res, not_poison_eq.res)
+        rewriter.insert_op_before_matched_op(
+            [
+                not_before_poison,
+                not_after_poison,
+                forall_op,
+                not_poison_eq,
+                refinement_integer,
+            ]
+        )
+
+        # With UB, our refinement is: ub_before \/ (not ub_after /\ integer_refinement)
+        ub_before_bool = ub_effect.ToBoolOp(state_before)
+        ub_after_bool = ub_effect.ToBoolOp(state_after)
+        not_ub_after = smt.NotOp(ub_after_bool.res)
+        not_ub_before_case = smt.AndOp(not_ub_after.res, refinement_integer.res)
+        refinement = smt.OrOp(ub_before_bool.res, not_ub_before_case.res)
+        rewriter.insert_op_before_matched_op(
+            [
+                ub_before_bool,
+                ub_after_bool,
+                not_ub_after,
+                not_ub_before_case,
+                refinement,
+            ]
+        )
+        return refinement.res
 
 
 class IntIntegerTypeSemantics(TypeSemantics):
