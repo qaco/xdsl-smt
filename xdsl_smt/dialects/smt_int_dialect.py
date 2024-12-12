@@ -1,4 +1,4 @@
-from typing import TypeVar, IO
+from typing import Callable, Sequence, TypeVar, IO
 from ..traits.effects import Pure
 from xdsl.dialects.builtin import (
     IntegerAttr,
@@ -14,6 +14,7 @@ from xdsl.irdl import (
     IRDLOperation,
 )
 from xdsl.ir import (
+    Block,
     Dialect,
     OpResult,
     Operation,
@@ -188,6 +189,55 @@ class GtOp(BinaryPredIntOp, SimpleSMTLibOp):
 
     def op_name(self) -> str:
         return ">"
+
+
+def bitwise_function(
+    combine_bits: Callable[[SSAValue, SSAValue], Sequence[Operation]], name: str
+):
+    # The body of the function
+    block = Block(arg_types=[SMTIntType(), SMTIntType(), SMTIntType()])
+    k = block.args[0]
+    x = block.args[1]
+    y = block.args[2]
+    # Constants
+    one_op = ConstantOp(1)
+    two_op = ConstantOp(2)
+    block.add_ops([one_op, two_op])
+    # Combine bits
+    x_bit_op = ModOp(x, two_op.res)
+    y_bit_op = ModOp(y, two_op.res)
+    block.add_ops([x_bit_op, y_bit_op])
+    bits_ops = combine_bits(x_bit_op.res, y_bit_op.res)
+    assert bits_ops
+    block.add_ops(bits_ops)
+    # Recursive call
+    new_x_op = DivOp(x, two_op.res)
+    new_y_op = DivOp(y, two_op.res)
+    k_minus_one = SubOp(k, one_op.res)
+    rec_call_op = smt.RecCallOp(
+        args=[k_minus_one.res, new_x_op.res, new_y_op.res],
+        result_types=[SMTIntType()],
+    )
+    mul_op = MulOp(two_op.res, rec_call_op.res[0])
+    # Result
+    assert isinstance(bits_ops[-1], BinaryIntOp)
+    res_op = AddOp(bits_ops[-1].res, mul_op.res)
+    return_op = smt.ReturnOp(res_op.res)
+    # Build the function
+    block.add_ops(
+        [
+            new_x_op,
+            new_y_op,
+            k_minus_one,
+            rec_call_op,
+            mul_op,
+            res_op,
+            return_op,
+        ]
+    )
+    region = Region([block])
+    define_fun_op = smt.DefineRecFunOp(region, name)
+    return define_fun_op
 
 
 SMTIntDialect = Dialect(
